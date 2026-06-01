@@ -134,16 +134,18 @@ import { getMaxChatHistoryMessagesBytes, MAX_PAYLOAD_BYTES } from "../server-con
 import { resolveSessionHistoryTailReadOptions } from "../session-history-state.js";
 import { readSessionTranscriptIndex } from "../session-transcript-index.fs.js";
 import {
+  readSessionMessageByIdAsync,
+  readSessionMessagesAsync,
+  readRecentSessionMessagesAsync,
+} from "../session-transcript-readers.js";
+import {
   capArrayByJsonBytes,
   buildGatewaySessionInfo,
   getSessionDefaults,
   loadSessionEntry,
   listAgentsForGateway,
-  readSessionMessageByIdAsync,
-  readSessionMessagesAsync,
   resolveGatewayModelSupportsImages,
   resolveDeletedAgentIdFromSessionKey,
-  readRecentSessionMessagesAsync,
   resolveSessionModelRef,
   resolveSessionStoreKey,
 } from "../session-utils.js";
@@ -2287,6 +2289,7 @@ async function isChatMessageIdVisibleAfterHistoryFilters(params: {
   sessionId: string;
   storePath: string | undefined;
   sessionFile: string | undefined;
+  agentId?: string;
   messageId: string;
   sessionStartedAt?: number;
 }): Promise<boolean> {
@@ -2294,9 +2297,12 @@ async function isChatMessageIdVisibleAfterHistoryFilters(params: {
     return true;
   }
   const messages = await readSessionMessagesAsync(
-    params.sessionId,
-    params.storePath,
-    params.sessionFile,
+    {
+      agentId: params.agentId,
+      sessionFile: params.sessionFile,
+      sessionId: params.sessionId,
+      storePath: params.storePath,
+    },
     {
       mode: "full",
       reason: "chat.message.get visibility",
@@ -2395,10 +2401,18 @@ async function handleChatHistoryRequest({
   };
   const localMessages =
     sessionId && storePath
-      ? await readRecentSessionMessagesAsync(sessionId, storePath, entry?.sessionFile, {
-          ...localHistoryReadOptions,
-          maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
-        })
+      ? await readRecentSessionMessagesAsync(
+          {
+            agentId: sessionAgentId,
+            sessionFile: entry?.sessionFile,
+            sessionId,
+            storePath,
+          },
+          {
+            ...localHistoryReadOptions,
+            maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
+          },
+        )
       : [];
   const overreadContextMessage =
     localMessages.length > rawHistoryWindow.maxMessages ? localMessages[0] : undefined;
@@ -2560,10 +2574,18 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
 
+    const sessionAgentId = resolveSessionAgentId({
+      sessionKey,
+      config: cfg,
+      agentId: selectedAgent.agentId,
+    });
     const resolved = await readSessionMessageByIdAsync(
-      sessionId,
-      storePath,
-      entry?.sessionFile,
+      {
+        agentId: sessionAgentId,
+        sessionFile: entry?.sessionFile,
+        sessionId,
+        storePath,
+      },
       messageId,
     );
     if (!resolved.found) {
@@ -2574,6 +2596,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionId,
       storePath,
       sessionFile: entry?.sessionFile,
+      agentId: sessionAgentId,
       messageId,
       sessionStartedAt:
         typeof entry?.sessionStartedAt === "number" ? entry.sessionStartedAt : undefined,

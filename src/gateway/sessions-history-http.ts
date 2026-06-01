@@ -32,6 +32,8 @@ import { resolveTranscriptPathForComparison } from "./session-transcript-path.js
 import {
   readRecentSessionMessagesWithStatsAsync,
   readSessionMessagesAsync,
+} from "./session-transcript-readers.js";
+import {
   resolveFreshestSessionEntryFromStoreKeys,
   resolveGatewaySessionStoreTarget,
   resolveSessionTranscriptCandidates,
@@ -142,9 +144,12 @@ export async function handleSessionHistoryHttpRequest(
   const boundedSnapshot =
     cursor === undefined && typeof limit === "number"
       ? await readRecentSessionMessagesWithStatsAsync(
-          entry.sessionId,
-          target.storePath,
-          entry.sessionFile,
+          {
+            agentId: target.agentId,
+            sessionFile: entry.sessionFile,
+            sessionId: entry.sessionId,
+            storePath: target.storePath,
+          },
           resolveSessionHistoryTailReadOptions(limit),
         )
       : undefined;
@@ -153,10 +158,18 @@ export async function handleSessionHistoryHttpRequest(
   const rawSnapshot =
     boundedSnapshot?.messages ??
     (entry?.sessionId
-      ? await readSessionMessagesAsync(entry.sessionId, target.storePath, entry.sessionFile, {
-          mode: "full",
-          reason: "session history cursor pagination",
-        })
+      ? await readSessionMessagesAsync(
+          {
+            agentId: target.agentId,
+            sessionFile: entry.sessionFile,
+            sessionId: entry.sessionId,
+            storePath: target.storePath,
+          },
+          {
+            mode: "full",
+            reason: "session history cursor pagination",
+          },
+        )
       : []);
   const historySnapshot = buildSessionHistorySnapshot({
     rawMessages: rawSnapshot,
@@ -192,6 +205,7 @@ export async function handleSessionHistoryHttpRequest(
   let sentHistory = history;
   const sseState = SessionHistorySseState.fromRawSnapshot({
     target: {
+      agentId: target.agentId,
       sessionId: entry.sessionId,
       storePath: target.storePath,
       sessionFile: entry.sessionFile,
