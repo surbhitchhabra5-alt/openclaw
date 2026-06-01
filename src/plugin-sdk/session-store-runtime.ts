@@ -148,15 +148,10 @@ export { resolveGroupSessionKey } from "../config/sessions/group.js";
 export { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 export {
   clearSessionStoreCacheForTest,
-  cleanupSessionLifecycleArtifacts,
   recordSessionMetaFromInbound,
   saveSessionStore,
   updateLastRoute,
   updateSessionStore,
-} from "../config/sessions/store.js";
-export type {
-  SessionLifecycleArtifactCleanupParams,
-  SessionLifecycleArtifactCleanupResult,
 } from "../config/sessions/store.js";
 export {
   evaluateSessionFreshness,
