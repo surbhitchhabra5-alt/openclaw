@@ -13,10 +13,7 @@ import {
   spinner,
   text,
 } from "@clack/prompts";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { note as emitNote } from "../../packages/terminal-core/src/note.js";
 import {
@@ -54,7 +51,7 @@ function buildOptionSearchText<T>(option: Option<T>): string {
 }
 
 function normalizeTextPromptResult(value: unknown): string {
-  return normalizeOptionalString(value) ?? "";
+  return typeof value === "string" ? value : "";
 }
 
 export function tokenizedOptionFilter<T>(search: string, option: Option<T>): boolean {
