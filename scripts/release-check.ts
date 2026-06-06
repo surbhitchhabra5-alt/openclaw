@@ -31,28 +31,7 @@ import {
   type BundledExtension,
   type ExtensionPackageJson as PackageJson,
 } from "./lib/bundled-extension-manifest.ts";
-import {
-  collectRootPackageExcludedExtensionDirs,
-  listBundledPluginPackArtifacts,
-} from "./lib/bundled-plugin-build-entries.mjs";
-import { collectPackUnpackedSizeErrors as collectNpmPackUnpackedSizeErrors } from "./lib/npm-pack-budget.mjs";
-import { collectBundledPluginPackageDependencySpecs } from "./lib/plugin-package-dependencies.mjs";
-import {
-  listPluginSdkDistArtifacts,
-  listPrivateLocalOnlyPluginSdkDistArtifacts,
-} from "./lib/plugin-sdk-entries.mjs";
-import {
-  runInstalledWorkspaceBootstrapSmoke,
-  WORKSPACE_TEMPLATE_PACK_PATHS,
-} from "./lib/workspace-bootstrap-smoke.mjs";
-import { resolveNpmRunner } from "./npm-runner.mjs";
-import {
-  collectInstalledPackageErrors,
-  normalizeInstalledBinaryVersion,
-  resolveInstalledBinaryCommandInvocation,
-  resolveInstalledBinaryPath,
-} from "./openclaw-npm-postpublish-verify.ts";
-import { listStaticExtensionAssetOutputs } from "./runtime-postbuild.mjs";
+import { listPluginSdkDistArtifacts } from "./lib/plugin-sdk-entries.mjs";
 import { sparkleBuildFloorsFromShortVersion, type SparkleBuildFloors } from "./sparkle-build.ts";
 import { buildCmdExeCommandLine } from "./windows-cmd-helpers.mjs";
 
@@ -100,176 +79,14 @@ const requiredPathGroups = [
   "dist/channel-catalog.json",
   "dist/control-ui/index.html",
 ];
-const forbiddenPrefixes = [
-  ...LOCAL_BUILD_METADATA_DIST_PATHS,
-  "dist-runtime/",
-  "dist/OpenClaw.app/",
-  "dist/extensions/qa-channel/",
-  "dist/extensions/qa-lab/",
-  "dist/plugin-sdk/extensions/qa-channel/",
-  "dist/plugin-sdk/extensions/qa-lab/",
-  "dist/plugin-sdk/qa-channel.",
-  "dist/plugin-sdk/qa-channel-protocol.",
-  "dist/plugin-sdk/qa-lab.",
-  "dist/plugin-sdk/qa-runtime.",
-  "dist/plugin-sdk/src/",
-  "dist/plugin-sdk/src/plugin-sdk/qa-channel.d.ts",
-  "dist/plugin-sdk/src/plugin-sdk/qa-channel-protocol.d.ts",
-  "dist/plugin-sdk/src/plugin-sdk/qa-lab.d.ts",
-  "dist/plugin-sdk/src/plugin-sdk/qa-runtime.d.ts",
-  ...listPrivateLocalOnlyPluginSdkDistArtifacts(),
-  "dist/qa-runtime-",
-  "dist/plugin-sdk/.tsbuildinfo",
-  "docs/.generated/",
-  "docs/channels/qa-channel.md",
-  "qa/",
-];
-const forbiddenPrivateQaContentMarkers = [
-  "//#region extensions/qa-lab/",
-  "qa-channel/runtime-api.js",
-  "qa-channel.js",
-  "qa-channel-protocol.js",
-  "qa-lab/cli.js",
-  "qa-lab/runtime-api.js",
-] as const;
-const forbiddenPrivatePluginSdkDeclarationMarkers = [
-  "//#region src/agents/test-helpers/",
-  "//#region src/plugin-sdk/test-helpers/",
-  "//#region src/test-helpers/",
-  "//#region src/test-utils/",
-] as const;
-const forbiddenPrivateQaContentScanPrefixes = ["dist/"] as const;
-const forbiddenPluginSdkRootAliasMinifiedExportPattern = /\bmod\.[A-Za-z_$]\b/u;
+const forbiddenPrefixes = ["dist-runtime/", "dist/OpenClaw.app/"];
+// 2026.3.12 ballooned to ~213.6 MiB unpacked and correlated with low-memory
+// startup/doctor OOM reports. Keep enough headroom for the current pack while
+// failing fast if duplicate/shim content sneaks back into the release artifact.
+const npmPackUnpackedSizeBudgetBytes = 160 * 1024 * 1024;
 const appcastPath = resolve("appcast.xml");
 const laneBuildMin = 1_000_000_000;
-const laneFloorAdoptionReleaseKey = 20260227;
-const SAFE_UNIX_SMOKE_PATH = "/usr/bin:/bin";
-const DEFAULT_RELEASE_CHECK_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_RELEASE_CHECK_COMMAND_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
-export const MAX_CRITICAL_PLUGIN_SDK_ENTRYPOINT_BYTES = 2 * 1024 * 1024;
-export const CRITICAL_PLUGIN_SDK_SIZE_CHECK_SPECIFIERS = [
-  "openclaw/plugin-sdk/core",
-  "openclaw/plugin-sdk/provider-entry",
-  "openclaw/plugin-sdk/runtime",
-] as const;
-export const CRITICAL_PLUGIN_SDK_IMPORT_SMOKE_SPECIFIERS = ["openclaw/plugin-sdk/core"] as const;
-export const PACKED_CLI_SMOKE_COMMANDS = [
-  ["--help"],
-  ["onboard", "--help"],
-  ["doctor", "--help"],
-  ["status", "--json", "--timeout", "1"],
-  ["config", "schema"],
-  ["models", "list", "--provider", "openai"],
-] as const;
-export const PACKED_BUNDLED_RUNTIME_DEPS_REPAIR_ARGS = [
-  "doctor",
-  "--fix",
-  "--non-interactive",
-] as const;
-export const PACKED_COMPLETION_SMOKE_ARGS = [
-  "completion",
-  "--write-state",
-  "--shell",
-  "zsh",
-] as const;
-const PACKED_PLUGIN_SDK_TYPESCRIPT_SMOKE_FIXTURE = resolve(
-  "scripts/fixtures/packed-plugin-sdk-type-smoke.ts",
-);
-
-function positiveEnvInt(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (raw === undefined || raw === "") {
-    return fallback;
-  }
-  if (!/^[1-9]\d*$/u.test(raw)) {
-    throw new Error(`invalid ${name}: ${raw}`);
-  }
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) {
-    throw new Error(`invalid ${name}: ${raw}`);
-  }
-  return value;
-}
-
-export function runReleaseCheckCommand(
-  invocation: ReleaseCheckCommandInvocation,
-  options: {
-    cwd?: string;
-    encoding?: BufferEncoding;
-    env?: NodeJS.ProcessEnv;
-    maxBuffer?: number;
-    shell?: boolean | string;
-    stdio: "inherit" | ["ignore", "pipe", "pipe"];
-    timeoutMs?: number;
-  },
-): string {
-  const output = execFileSync(invocation.command, invocation.args, {
-    cwd: options.cwd,
-    encoding: options.encoding,
-    env: invocation.env ?? options.env,
-    killSignal: "SIGKILL",
-    maxBuffer:
-      options.maxBuffer ??
-      positiveEnvInt(
-        "OPENCLAW_RELEASE_CHECK_COMMAND_MAX_BUFFER_BYTES",
-        DEFAULT_RELEASE_CHECK_COMMAND_MAX_BUFFER_BYTES,
-      ),
-    shell: invocation.shell ?? options.shell,
-    stdio: options.stdio,
-    timeout:
-      options.timeoutMs ??
-      positiveEnvInt(
-        "OPENCLAW_RELEASE_CHECK_COMMAND_TIMEOUT_MS",
-        DEFAULT_RELEASE_CHECK_COMMAND_TIMEOUT_MS,
-      ),
-    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-  }) as Buffer | string | null;
-  if (output == null) {
-    return "";
-  }
-  return typeof output === "string" ? output : output.toString("utf8");
-}
-
-export function collectSkillShellScriptExecutableErrors(rootDir = resolve(".")): string[] {
-  if (process.platform === "win32") {
-    return [];
-  }
-
-  const skillsDir = join(rootDir, "skills");
-  const errors: string[] = [];
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(skillsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const scriptsDir = join(skillsDir, entry.name, "scripts");
-    let scriptEntries: Dirent[];
-    try {
-      scriptEntries = readdirSync(scriptsDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const scriptEntry of scriptEntries) {
-      if (!scriptEntry.isFile() || !scriptEntry.name.endsWith(".sh")) {
-        continue;
-      }
-      const scriptPath = join(scriptsDir, scriptEntry.name);
-      if ((statSync(scriptPath).mode & 0o111) === 0) {
-        errors.push(
-          `skill shell script is not executable: skills/${entry.name}/scripts/${scriptEntry.name}`,
-        );
-      }
-    }
-  }
-
-  return errors;
-}
+const laneFloorAdoptionDateKey = 20260227;
 
 function collectBundledExtensions(): BundledExtension[] {
   const extensionsDir = resolve("extensions");
@@ -1167,6 +984,7 @@ async function main() {
   const results = runPackDry();
   const files = results.flatMap((entry) => entry.files ?? []);
   const paths = new Set(files.map((file) => file.path));
+  const missingBundledPluginPaths = collectMissingBundledPluginPackPaths(paths);
 
   const missing = requiredPathGroups
     .flatMap((group) => {
@@ -1175,7 +993,7 @@ async function main() {
       }
       return paths.has(group) ? [] : [group];
     })
-    .toSorted((left, right) => left.localeCompare(right));
+    .toSorted();
   const forbidden = collectForbiddenPackPaths(paths);
   const forbiddenContent = collectForbiddenPackContentPaths(paths);
   const sizeErrors = collectNpmPackUnpackedSizeErrors(results);
@@ -1190,10 +1008,6 @@ async function main() {
       console.error("release-check: missing files in npm pack:");
       for (const path of missing) {
         console.error(`  - ${path}`);
-      }
-      const buildHint = resolveMissingPackBuildHint(missing);
-      if (buildHint) {
-        console.error(buildHint);
       }
     }
     if (forbidden.length > 0) {

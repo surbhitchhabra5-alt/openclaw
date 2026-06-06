@@ -154,7 +154,7 @@ jobs:
         run: pnpm check:architecture
 
       - name: Build
-        run: pnpm build
+        run: pnpm build:npm-pack
 
       - name: Build Control UI
         run: pnpm ui:build

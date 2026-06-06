@@ -1,5 +1,4 @@
-// Optional bundled plugin cluster policy used by build and package scripts.
-const optionalBundledClusters = [
+export const optionalBundledClusters = [
   "acpx",
   "diagnostics-otel",
   "diffs",
@@ -42,4 +41,22 @@ export function shouldBuildBundledCluster(cluster, env = process.env, options = 
     return true;
   }
   return shouldIncludeOptionalBundledClusters(env) || !isOptionalBundledCluster(cluster);
+}
+
+export function resolveOptionalBundledClusterRequiredPackPaths(repoRoot = process.cwd()) {
+  return optionalBundledClusters
+    .filter((cluster) =>
+      fs.existsSync(path.join(repoRoot, "extensions", cluster, "openclaw.plugin.json")),
+    )
+    .flatMap((cluster) => [
+      `dist/extensions/${cluster}/openclaw.plugin.json`,
+      `dist/extensions/${cluster}/package.json`,
+    ]);
+}
+
+export function collectMissingOptionalBundledClusterPackPaths(paths, repoRoot = process.cwd()) {
+  const presentPaths = new Set(paths);
+  return resolveOptionalBundledClusterRequiredPackPaths(repoRoot).filter(
+    (path) => !presentPaths.has(path),
+  );
 }

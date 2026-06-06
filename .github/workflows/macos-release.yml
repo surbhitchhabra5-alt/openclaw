@@ -61,7 +61,7 @@ jobs:
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
       - name: Build
-        run: pnpm build
+        run: pnpm build:npm-pack
 
       - name: Build Control UI
         run: pnpm ui:build

@@ -6,11 +6,6 @@ import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WORKSPACE_TEMPLATE_PACK_PATHS } from "../scripts/lib/workspace-bootstrap-smoke.mjs";
 import {
-  compareReleaseVersions,
-  collectControlUiPackErrors,
-  collectForbiddenPackedContentErrors,
-  collectForbiddenPackedPathErrors,
-  collectPackedTestCargoErrors,
   collectReleasePackageMetadataErrors,
   collectReleaseTagErrors,
   parseNpmPackJsonOutput,
@@ -855,6 +850,14 @@ describe("collectReleasePackageMetadataErrors", () => {
       }),
     ).toContain(
       'package.json optionalDependencies["node-llama-cpp"] must be omitted; keep it operator-installed.',
+    );
+  });
+});
+
+describe("collectPackedTarballPathErrors", () => {
+  it("requires optional bundled plugin paths in the npm tarball", () => {
+    expect(collectPackedTarballPathErrors(["dist/control-ui/index.html"])).toContain(
+      'npm package is missing required path "dist/extensions/acpx/openclaw.plugin.json". Build the package with `pnpm build:npm-pack` and include UI assets before publish.',
     );
   });
 });

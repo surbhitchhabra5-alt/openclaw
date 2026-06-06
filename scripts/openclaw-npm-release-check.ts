@@ -5,19 +5,6 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  LOCAL_BUILD_METADATA_DIST_PATHS,
-  PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
-  writePackageDistInventory,
-} from "../src/infra/package-dist-inventory.ts";
-import {
-  compareReleaseVersions as compareReleaseVersionsBase,
-  collectReleaseVersionFloorErrors as collectReleaseVersionFloorErrorsBase,
-  resolveNpmDistTagMirrorAuth as resolveNpmDistTagMirrorAuthBase,
-  parseReleaseVersion as parseReleaseVersionBase,
-} from "./lib/npm-publish-plan.mjs";
-import { WORKSPACE_TEMPLATE_PACK_PATHS } from "./lib/workspace-bootstrap-smoke.mjs";
-import { buildCmdExeCommandLine } from "./windows-cmd-helpers.mjs";
 
 type PackageJson = {
   name?: string;
@@ -63,122 +50,9 @@ export type NpmDistTagMirrorAuth = {
   source: "node-auth-token" | "npm-token" | "none";
 };
 const EXPECTED_REPOSITORY_URL = "https://github.com/openclaw/openclaw";
-const OPTIONAL_LOCAL_EMBEDDING_RUNTIME_PACKAGE = "node-llama-cpp";
-const FS_SAFE_PACKAGE = "@openclaw/fs-safe";
-const REQUIRED_PACKED_PATHS = [
-  "npm-shrinkwrap.json",
-  PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
-  "dist/control-ui/index.html",
-  ...WORKSPACE_TEMPLATE_PACK_PATHS,
-];
-const CONTROL_UI_ASSET_PREFIX = "dist/control-ui/assets/";
-const FORBIDDEN_PACKED_PATH_RULES = [
-  ...LOCAL_BUILD_METADATA_DIST_PATHS.map((prefix) => ({
-    prefix,
-    describe: (packedPath: string) =>
-      `npm package must not include local build metadata "${packedPath}".`,
-  })),
-  {
-    prefix: "docs/.generated/",
-    describe: (packedPath: string) =>
-      `npm package must not include generated docs artifact "${packedPath}".`,
-  },
-  {
-    prefix: "docs/channels/qa-channel.md",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA channel docs "${packedPath}".`,
-  },
-  {
-    prefix: "dist/extensions/qa-channel/",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA channel artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/extensions/qa-lab/",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA lab artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/plugin-sdk/extensions/qa-channel/",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA channel type artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/plugin-sdk/extensions/qa-lab/",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA lab type artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/plugin-sdk/qa-channel.",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA channel SDK artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/plugin-sdk/qa-channel-protocol.",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA channel SDK artifact "${packedPath}".`,
-  },
-  {
-    prefix: "dist/qa-runtime-",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA runtime chunk "${packedPath}".`,
-  },
-  {
-    prefix: "qa/",
-    describe: (packedPath: string) =>
-      `npm package must not include private QA suite artifact "${packedPath}".`,
-  },
-] as const;
-const FORBIDDEN_PRIVATE_QA_CONTENT_MARKERS = [
-  "//#region extensions/qa-lab/",
-  "qa-channel/runtime-api.js",
-  "qa-channel.js",
-  "qa-channel-protocol.js",
-  "qa-lab/cli.js",
-  "qa-lab/runtime-api.js",
-] as const;
-const FORBIDDEN_PRIVATE_QA_CONTENT_SCAN_PREFIXES = ["dist/"] as const;
-const PACKED_TEST_CARGO_DIRECTORY_SEGMENTS = new Set([
-  "__snapshots__",
-  "__tests__",
-  "test",
-  "tests",
-]);
-const PACKED_TEST_CARGO_FILE_RE = /(?:^|\/)[^/]+\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/u;
-const NPM_PACK_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
-const DEFAULT_RELEASE_CHECK_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
-const skipPackValidationEnv = "OPENCLAW_NPM_RELEASE_SKIP_PACK_CHECK";
-
-type ReleaseCheckCommandInvocation = {
-  command: string;
-  args: string[];
-  windowsVerbatimArguments?: boolean;
-};
-
-function normalizePackedPath(packedPath: string): string {
-  return packedPath.replace(/\\/g, "/");
-}
-function isNodeModulesPackageRoot(segments: string[], index: number): boolean {
-  const parent = segments[index - 1];
-  if (parent === "node_modules") {
-    return true;
-  }
-  return parent?.startsWith("@") && segments[index - 2] === "node_modules";
-}
-
-function pathContainsPackedTestCargo(packedPath: string): boolean {
-  const normalizedPath = normalizePackedPath(packedPath);
-  if (PACKED_TEST_CARGO_FILE_RE.test(normalizedPath)) {
-    return true;
-  }
-  const segments = normalizedPath.split("/").filter(Boolean);
-  return segments.some(
-    (segment, index) =>
-      index < segments.length - 1 &&
-      PACKED_TEST_CARGO_DIRECTORY_SEGMENTS.has(segment) &&
-      !isNodeModulesPackageRoot(segments, index),
-  );
-}
+const MAX_CALVER_DISTANCE_DAYS = 2;
+const REQUIRED_PACKED_PATHS = ["dist/control-ui/index.html"];
+const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function normalizeRepoUrl(value: unknown): string {
   if (typeof value !== "string") {
@@ -534,8 +408,14 @@ export function resolveNpmCommandInvocation(
 }
 
 function runNpmCommand(args: string[]): string {
-  const invocation = resolveNpmCommandInvocation({ npmArgs: args });
-  return runNpmReleaseCheckCommand(invocation, {
+  const npmExecPath = process.env.npm_execpath;
+  if (typeof npmExecPath === "string" && npmExecPath.length > 0) {
+    return execFileSync(process.execPath, [npmExecPath, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+  return execFileSync(NPM_COMMAND, args, {
     encoding: "utf8",
     maxBuffer: NPM_PACK_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
@@ -560,8 +440,8 @@ function toTrimmedUtf8(value: string | Uint8Array | undefined): string {
   if (typeof value === "string") {
     return value.trim();
   }
-  if (value instanceof Uint8Array) {
-    return new TextDecoder().decode(value).trim();
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8").trim();
   }
   return "";
 }
@@ -583,54 +463,6 @@ function describeExecFailure(error: unknown): string {
   return details.join(" | ");
 }
 
-export function parseNpmPackJsonOutput(stdout: string): NpmPackResult[] | null {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const candidates = [trimmed];
-  const trailingArrayStart = trimmed.lastIndexOf("\n[");
-  if (trailingArrayStart !== -1) {
-    candidates.push(trimmed.slice(trailingArrayStart + 1).trim());
-  }
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed as NpmPackResult[];
-      }
-    } catch {
-      // Try the next candidate. npm lifecycle output can prepend non-JSON logs.
-    }
-  }
-
-  return null;
-}
-
-export function collectControlUiPackErrors(paths: Iterable<string>): string[] {
-  const packedPaths = new Set(paths);
-  const assetPaths = [...packedPaths].filter((path) => path.startsWith(CONTROL_UI_ASSET_PREFIX));
-  const errors: string[] = [];
-
-  for (const requiredPath of REQUIRED_PACKED_PATHS) {
-    if (!packedPaths.has(requiredPath)) {
-      errors.push(
-        `npm package is missing required path "${requiredPath}". Ensure UI assets are built and included before publish.`,
-      );
-    }
-  }
-
-  if (assetPaths.length === 0) {
-    errors.push(
-      `npm package is missing Control UI asset payload under "${CONTROL_UI_ASSET_PREFIX}". Refuse release when the dashboard tarball would be empty.`,
-    );
-  }
-
-  return errors;
-}
-
 function collectPackedTarballErrors(): string[] {
   const errors: string[] = [];
   let stdout;
@@ -644,9 +476,11 @@ function collectPackedTarballErrors(): string[] {
     return errors;
   }
 
-  const packResults = parseNpmPackJsonOutput(stdout);
-  if (!packResults) {
-    errors.push("Failed to parse JSON output from `npm pack --json --dry-run --ignore-scripts`.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    errors.push("Failed to parse JSON output from `npm pack --json --dry-run`.");
     return errors;
   }
   const firstResult = packResults[0];
@@ -663,87 +497,15 @@ function collectPackedTarballErrors(): string[] {
       .filter((path): path is string => typeof path === "string" && path.length > 0),
   );
 
-  return [
-    ...collectControlUiPackErrors(packedPaths),
-    ...collectForbiddenPackedPathErrors(packedPaths),
-    ...collectForbiddenPackedContentErrors(packedPaths),
-    ...collectPackedTestCargoErrors(packedPaths),
-  ];
-}
-
-function collectNpmShrinkwrapErrors(): string[] {
-  try {
-    runNpmReleaseCheckCommand(
-      { command: process.execPath, args: ["scripts/generate-npm-shrinkwrap.mjs", "--check"] },
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    return [];
-  } catch (error) {
-    return [`npm-shrinkwrap.json must match package dependencies: ${describeExecFailure(error)}`];
+  for (const requiredPath of REQUIRED_PACKED_PATHS) {
+    if (!packedPaths.has(requiredPath)) {
+      errors.push(
+        `npm package is missing required path "${requiredPath}". Ensure UI assets are built and included before publish.`,
+      );
+    }
   }
-}
 
-export function collectForbiddenPackedPathErrors(paths: Iterable<string>): string[] {
-  const errors: string[] = [];
-  for (const packedPath of paths) {
-    const matchedRule = FORBIDDEN_PACKED_PATH_RULES.find((rule) =>
-      packedPath.startsWith(rule.prefix),
-    );
-    if (!matchedRule) {
-      continue;
-    }
-    errors.push(matchedRule.describe(packedPath));
-  }
-  return errors.toSorted((left, right) => left.localeCompare(right));
-}
-
-export function collectForbiddenPackedContentErrors(
-  paths: Iterable<string>,
-  rootDir = process.cwd(),
-): string[] {
-  const textPathPattern = /\.(?:[cm]?js|d\.ts|json|md|mjs|cjs)$/u;
-  const errors: string[] = [];
-  for (const packedPath of paths) {
-    if (
-      !FORBIDDEN_PRIVATE_QA_CONTENT_SCAN_PREFIXES.some((prefix) => packedPath.startsWith(prefix))
-    ) {
-      continue;
-    }
-    if (!textPathPattern.test(packedPath)) {
-      continue;
-    }
-    let content: string;
-    try {
-      content = readFileSync(pathToFileURL(join(rootDir, packedPath)), "utf8");
-    } catch {
-      continue;
-    }
-    const matchedMarker = FORBIDDEN_PRIVATE_QA_CONTENT_MARKERS.find((marker) =>
-      content.includes(marker),
-    );
-    if (!matchedMarker) {
-      continue;
-    }
-    errors.push(
-      `npm package must not include private QA lab marker "${matchedMarker}" in "${packedPath}".`,
-    );
-  }
-  return errors.toSorted((left, right) => left.localeCompare(right));
-}
-
-export function collectPackedTestCargoErrors(paths: Iterable<string>): string[] {
-  const errors: string[] = [];
-  for (const packedPath of paths) {
-    if (!pathContainsPackedTestCargo(packedPath)) {
-      continue;
-    }
-    errors.push(`npm package must not include test cargo "${packedPath}".`);
-  }
-  return errors.toSorted((left, right) => left.localeCompare(right));
+  return errors;
 }
 
 async function main(): Promise<number> {

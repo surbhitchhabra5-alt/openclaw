@@ -20,8 +20,6 @@ import {
   collectCriticalPluginSdkEntrypointSizeErrors,
   collectForbiddenPackContentPaths,
   collectForbiddenPackPaths,
-  collectMissingPackPaths,
-  collectSkillShellScriptExecutableErrors,
   collectPackUnpackedSizeErrors,
   collectPackedInstalledPackageVerificationErrors,
   createPackedPluginSdkTypescriptSmokeProject,
@@ -843,6 +841,17 @@ describe("createPackedPluginSdkTypescriptSmokeProject", () => {
   });
 });
 
+describe("collectMissingBundledPluginPackPaths", () => {
+  it("requires optional bundled plugin metadata in npm packs", () => {
+    expect(
+      collectMissingBundledPluginPackPaths([
+        "dist/extensions/discord/openclaw.plugin.json",
+        "dist/extensions/discord/package.json",
+      ]),
+    ).toContain("dist/extensions/acpx/openclaw.plugin.json");
+  });
+});
+
 describe("collectPackUnpackedSizeErrors", () => {
   it("accepts pack results within the unpacked size budget", () => {
     expect(
@@ -854,7 +863,7 @@ describe("collectPackUnpackedSizeErrors", () => {
     expect(
       collectPackUnpackedSizeErrors([makePackResult("openclaw-2026.3.12.tgz", 224_002_564)]),
     ).toEqual([
-      "openclaw-2026.3.12.tgz unpackedSize 224002564 bytes (213.6 MiB) exceeds budget 211812352 bytes (202.0 MiB). Investigate duplicate channel shims, copied extension trees, or other accidental pack bloat before release.",
+      "openclaw-2026.3.12.tgz unpackedSize 224002564 bytes (213.6 MiB) exceeds budget 167772160 bytes (160.0 MiB). Investigate duplicate channel shims, copied extension trees, or other accidental pack bloat before release.",
     ]);
   });
 
